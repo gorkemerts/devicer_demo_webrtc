@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebRTC Alıcısı (Video Streamer)</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh; /* Yüksekliği min-height olarak ayarla */
+            font-family: Arial, sans-serif;
+            background-color: #f0f0f0;
+            margin: 0; /* Sayfada varsayılan boşlukları kaldır */
+            padding: 20px; /* İçerik için biraz boşluk bırak */
+            box-sizing: border-box; /* Padding'in genişlik/yüksekliğe dahil olmasını sağla */
+        }
+
+        .phone-container {
+            width: 800px;
+            height: 400px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 20px;
+            border: 1px solid #ccc; /* Telefon görünümüne biraz kenarlık ekleyelim */
+            border-radius: 12px;
+            overflow: hidden; /* Canvas'ın dışına taşmasını engelle */
+            position: relative; /* Canvas'ı içine konumlandırmak için */
+        }
+
+        /* Telefon siluetini kaldırıp yerine canvas'ı koyacağız */
+        /* svg { display: none; } */ /* SVG'yi gizleyebiliriz */
+
+        #videoCanvas {
+            width: 100%;
+            height: 100%;
+            display: block; /* Canvas'ın doğru boyutlandırılması için */
+            background-color: black; /* Video gelmeden önce siyah arkaplan */
+        }
+
+        #runBtn {
+            background-color: #28a745;
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            font-size: 18px;
+            border-radius: 8px;
+            cursor: pointer;
+            margin-bottom: 20px;
+            transition: background-color 0.3s ease;
+        }
+
+        #runBtn:hover {
+            background-color: #218838;
+        }
+
+        #runBtn:disabled {
+            background-color: #999;
+            cursor: not-allowed;
+        }
+
+        pre {
+            width: 90%;
+            max-width: 500px;
+            height: 150px; /* Konsol alanını biraz küçültelim */
+            overflow-y: auto;
+            background: #fff;
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px solid #ccc;
+            margin-top: 10px;
+            font-size: 0.9em;
+            white-space: pre-wrap; /* Uzun mesajların sarılmasını sağla */
+            word-break: break-all; /* Uzun kelimelerin kırılmasını sağla */
+        }
+
+        #status {
+            margin-top: 10px;
+            font-size: 1.1em;
+            color: #555;
+        }
+    </style>
+</head>
+<body>
+    <div class="phone-container">
+        <!-- Telefon silüeti yerine video akışını göstereceğimiz canvas -->
+        <canvas id="videoCanvas"></canvas>
+    </div>
+
+    <button id="runBtn">RUN</button>
+    <p id="status">Bekleniyor...</p>
+
+    <h2>Konsol Çıktıları:</h2>
+    <pre id="dataArea"></pre>
+
+    <script>
+        let streamWs = null; 
+        const runBtn = document.getElementById('runBtn');
+        const dataArea = document.getElementById('dataArea');
+        const statusDiv = document.getElementById('status'); 
+
+        const canvas = document.getElementById('videoCanvas');
+        const ctx = canvas.getContext('2d');
+        let img = new Image(); 
+
+        const ws = new WebSocket('ws://localhost:3000'); 
+
+        ws.onopen = () => {
+            ws.send(JSON.stringify({ type: "client_awake" }));
+            console.log('Sinyalleşme sunucusuna bağlandı.');
+            dataArea.textContent += '\nSinyalleşme sunucusuna bağlandı.';
+            statusDiv.textContent = 'Sinyalleşme sunucusuna bağlandı.';
+            runBtn.disabled = false; 
+        };
+
+        ws.onmessage = async (event) => {
+            console.log("main_event", event);
+            dataArea.textContent += `\nSinyalizasyon RAW: ${event.data.substring(0, 100)}...`; 
+
+            const message = JSON.parse(event.data);
+            console.log('Sinyal mesajı alındı:', message);
+            dataArea.textContent += `\nSinyal mesajı alındı: ${JSON.stringify(message.type)}`;
+
+            if (message.type === 'answer') {
+                const streamerPort = message.port; 
+                statusDiv.textContent = `Streamer ${streamerPort} portunda bulundu. Bağlanılıyor...`;
+                dataArea.textContent += `\nStreamer ${streamerPort} portunda bulundu. Bağlanılıyor...`;
+                    //// peer connection start 
+                
+
+            } else if (message.type === 'mock') {
+                console.log("Mock:", message.ticker);
+                dataArea.textContent += `\nMock: ${message.ticker}`;
+            } else {
+                dataArea.textContent += `\nBilinmeyen sinyal mesajı: ${JSON.stringify(message)}`;
+            }
+        };
+
+        ws.onclose = () => {
+            console.log('disconneccted');
+            dataArea.textContent += '\nSinyalleşme sunucusu bağlantısı kesildi. Yeniden bağlanmaya çalışılıyor...';
+            statusDiv.textContent = 'Sinyalleşme sunucusu bağlantısı kesildi. Yeniden bağlanmak için sayfayı yenileyin.';
+            runBtn.disabled = true; 
+        };
+
+        ws.onerror = (error) => {
+            console.error('Sinyalleşme WebSocket Hatası:', error);
+            dataArea.textContent += `\nSinyalleşme WebSocket Hatası: ${error.message}`;
+            statusDiv.textContent = `Sinyalleşme hatası: ${error.message}. Lütfen sayfayı yenileyin.`;
+            runBtn.disabled = true;
+        };
+
+
+        runBtn.addEventListener('click', () => {
+            console.log('offer sends to signalization server');
+            dataArea.textContent += '\nYayın isteği gönderiliyor...';
+            ws.send(JSON.stringify({ type: 'request_stream' }));
+            runBtn.disabled = true; 
+            statusDiv.textContent = 'waiting for connection'
+        });
+    </script>
+</body>
+</html>
