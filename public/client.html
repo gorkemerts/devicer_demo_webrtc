@@ -8,35 +8,32 @@
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            min-height: 100vh; /* Yüksekliği min-height olarak ayarla */
+            min-height: 100vh;
             font-family: Arial, sans-serif;
             background-color: #f0f0f0;
-            margin: 0; /* Sayfada varsayılan boşlukları kaldır */
-            padding: 20px; /* İçerik için biraz boşluk bırak */
-            box-sizing: border-box; /* Padding'in genişlik/yüksekliğe dahil olmasını sağla */
+            margin: 0;
+            padding: 20px;
+            box-sizing: border-box;
         }
 
         .phone-container {
-            width: 800px;
-            height: 400px;
+            width: 800px; /* Daha geniş bir görüntü için */
+            height: 480px; /* Standart 16:9 oranında yükseklik */
             display: flex;
             align-items: center;
             justify-content: center;
             margin-bottom: 20px;
-            border: 1px solid #ccc; /* Telefon görünümüne biraz kenarlık ekleyelim */
+            border: 1px solid #ccc;
             border-radius: 12px;
-            overflow: hidden; /* Canvas'ın dışına taşmasını engelle */
-            position: relative; /* Canvas'ı içine konumlandırmak için */
+            overflow: hidden;
+            position: relative;
+            background-color: black; /* Video gelmeden önce siyah arkaplan */
         }
-
-        /* Telefon siluetini kaldırıp yerine canvas'ı koyacağız */
-        /* svg { display: none; } */ /* SVG'yi gizleyebiliriz */
 
         #videoCanvas {
             width: 100%;
             height: 100%;
-            display: block; /* Canvas'ın doğru boyutlandırılması için */
-            background-color: black; /* Video gelmeden önce siyah arkaplan */
+            display: block;
         }
 
         #runBtn {
@@ -62,8 +59,8 @@
 
         pre {
             width: 90%;
-            max-width: 500px;
-            height: 150px; /* Konsol alanını biraz küçültelim */
+            max-width: 800px; /* Konsol alanını genişletelim */
+            height: 200px; /* Yüksekliğini artıralım */
             overflow-y: auto;
             background: #fff;
             padding: 10px;
@@ -71,8 +68,8 @@
             border: 1px solid #ccc;
             margin-top: 10px;
             font-size: 0.9em;
-            white-space: pre-wrap; /* Uzun mesajların sarılmasını sağla */
-            word-break: break-all; /* Uzun kelimelerin kırılmasını sağla */
+            white-space: pre-wrap;
+            word-break: break-all;
         }
 
         #status {
@@ -84,80 +81,240 @@
 </head>
 <body>
     <div class="phone-container">
-        <!-- Telefon silüeti yerine video akışını göstereceğimiz canvas -->
         <canvas id="videoCanvas"></canvas>
     </div>
 
-    <button id="runBtn">RUN</button>
+    <button id="runBtn">STREAM BAŞLAT</button>
     <p id="status">Bekleniyor...</p>
 
     <h2>Konsol Çıktıları:</h2>
     <pre id="dataArea"></pre>
 
     <script>
-        let streamWs = null; 
         const runBtn = document.getElementById('runBtn');
         const dataArea = document.getElementById('dataArea');
-        const statusDiv = document.getElementById('status'); 
+        const statusDiv = document.getElementById('status');
 
         const canvas = document.getElementById('videoCanvas');
         const ctx = canvas.getContext('2d');
-        let img = new Image(); 
+        let img = new Image();
 
-        const ws = new WebSocket('ws://localhost:3000'); 
+        // Canvas boyutlarını ayarlayalım
+        canvas.width = 800; // Ebeveyn div ile aynı yapıyoruz
+        canvas.height = 480;
 
+        const ws = new WebSocket('ws://localhost:3000'); // Sinyalleşme sunucusu
+
+        // Global WebRTC PeerConnection değişkeni
+        let globalPeerConnection = null;
+
+        // WebSocket açıldığında
         ws.onopen = () => {
             ws.send(JSON.stringify({ type: "client_awake" }));
-            console.log('Sinyalleşme sunucusuna bağlandı.');
-            dataArea.textContent += '\nSinyalleşme sunucusuna bağlandı.';
+            logToConsole('Sinyalleşme sunucusuna bağlandı.');
             statusDiv.textContent = 'Sinyalleşme sunucusuna bağlandı.';
-            runBtn.disabled = false; 
+            runBtn.disabled = false;
         };
 
+        // WebSocket mesajı alındığında
         ws.onmessage = async (event) => {
-            console.log("main_event", event);
-            dataArea.textContent += `\nSinyalizasyon RAW: ${event.data.substring(0, 100)}...`; 
+            logToConsole(`Sinyalizasyon RAW: ${event.data.substring(0, 100)}...`);
 
             const message = JSON.parse(event.data);
-            console.log('Sinyal mesajı alındı:', message);
-            dataArea.textContent += `\nSinyal mesajı alındı: ${JSON.stringify(message.type)}`;
+            logToConsole(`Sinyal mesajı alındı: ${JSON.stringify(message.type)}`);
 
-            if (message.type === 'answer') {
-                const streamerPort = message.port; 
-                statusDiv.textContent = `Streamer ${streamerPort} portunda bulundu. Bağlanılıyor...`;
-                dataArea.textContent += `\nStreamer ${streamerPort} portunda bulundu. Bağlanılıyor...`;
-                    //// peer connection start 
-                
+            switch (message.type) {
+                case 'streamer_ready': // Streamer'dan gelen onay mesajı
+                    const streamerPort = message.port;
+                    statusDiv.textContent = `Streamer ${streamerPort} portunda hazır. WebRTC bağlantısı başlatılıyor...`;
+                    logToConsole(`Streamer ${streamerPort} portunda hazır. WebRTC bağlantısı başlatılıyor...`);
 
-            } else if (message.type === 'mock') {
-                console.log("Mock:", message.ticker);
-                dataArea.textContent += `\nMock: ${message.ticker}`;
-            } else {
-                dataArea.textContent += `\nBilinmeyen sinyal mesajı: ${JSON.stringify(message)}`;
+                    // PeerConnection'ı oluştur ve offer'ı gönder
+                    globalPeerConnection = createPeerConnection(ws);
+                    break;
+
+                case 'webrtc-answer': // Streamer'dan gelen WebRTC answer
+                    if (globalPeerConnection && message.answer) {
+                        logToConsole('Received WebRTC answer from streamer.');
+                        try {
+                            await globalPeerConnection.setRemoteDescription(new RTCSessionDescription(message.answer));
+                            logToConsole('Remote description set successfully - P2P connection establishing.');
+                            statusDiv.textContent = 'WebRTC bağlantısı kuruluyor...';
+                        } catch (error) {
+                            console.error('CLIENT: Error setting remote description:', error);
+                            logToConsole(`CLIENT: Error setting remote description: ${error.message}`);
+                        }
+                    }
+                    break;
+
+                case 'ice-candidate': // Streamer'dan gelen ICE adayı
+                    if (globalPeerConnection && message.candidate) {
+                        logToConsole('Received ICE candidate from streamer.');
+                        try {
+                            await globalPeerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
+                            logToConsole('ICE candidate added successfully.');
+                        } catch (error) {
+                            console.error('CLIENT: Error adding ICE candidate:', error);
+                            logToConsole(`CLIENT: Error adding ICE candidate: ${error.message}`);
+                        }
+                    }
+                    break;
+
+                default:
+                    logToConsole(`Bilinmeyen sinyal mesajı: ${JSON.stringify(message)}`);
+                    break;
             }
         };
 
+        // WebSocket kapandığında
         ws.onclose = () => {
-            console.log('disconneccted');
-            dataArea.textContent += '\nSinyalleşme sunucusu bağlantısı kesildi. Yeniden bağlanmaya çalışılıyor...';
+            logToConsole('Sinyalleşme sunucusu bağlantısı kesildi. Yeniden bağlanmaya çalışılıyor...');
             statusDiv.textContent = 'Sinyalleşme sunucusu bağlantısı kesildi. Yeniden bağlanmak için sayfayı yenileyin.';
-            runBtn.disabled = true; 
+            runBtn.disabled = true;
+            if (globalPeerConnection) {
+                globalPeerConnection.close();
+                globalPeerConnection = null;
+            }
         };
 
+        // WebSocket hata durumları
         ws.onerror = (error) => {
-            console.error('Sinyalleşme WebSocket Hatası:', error);
-            dataArea.textContent += `\nSinyalleşme WebSocket Hatası: ${error.message}`;
+            console.error('CLIENT: Sinyalleşme WebSocket Hatası:', error);
+            logToConsole(`CLIENT: Sinyalleşme WebSocket Hatası: ${error.message}`);
             statusDiv.textContent = `Sinyalleşme hatası: ${error.message}. Lütfen sayfayı yenileyin.`;
             runBtn.disabled = true;
         };
 
+        // WebRTC P2P bağlantısını kurma
+        function createPeerConnection(signalingSocket) {
+            const iceConfig = {
+                iceServers: [] // { urls: 'stun:stun.l.google.com:19302' } gibi STUN sunucuları eklenebilir
+            };
 
+            const peerConnection = new RTCPeerConnection(iceConfig);
+            logToConsole('CLIENT: WebRTC PeerConnection created.');
+
+            // ICE adayı olayını dinle, adayı sinyalleşme sunucusuna gönder
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    logToConsole(`CLIENT: ICE candidate found: ${event.candidate.candidate}`);
+                    if (signalingSocket.readyState === WebSocket.OPEN) {
+                        signalingSocket.send(JSON.stringify({
+                            type: 'ice-candidate',
+                            candidate: event.candidate
+                        }));
+                    }
+                } else {
+                    logToConsole('CLIENT: All ICE candidates gathered.');
+                }
+            };
+
+            // ICE bağlantı durumu değişimlerini izle
+            peerConnection.oniceconnectionstatechange = () => {
+                logToConsole(`CLIENT: ICE Connection State: ${peerConnection.iceConnectionState}`);
+                statusDiv.textContent = `WebRTC ICE Connection: ${peerConnection.iceConnectionState}`;
+                if (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
+                    logToConsole('CLIENT: WebRTC connection established successfully!');
+                    statusDiv.textContent = 'WebRTC bağlantısı kuruldu. Video bekleniyor.';
+                }
+            };
+
+            // Sinyalleşme durumu değişimlerini izle
+            peerConnection.onsignalingstatechange = () => {
+                logToConsole(`CLIENT: Signaling State: ${peerConnection.signalingState}`);
+            };
+
+            // Streamer'dan gelen Data Channel'ı dinle
+            peerConnection.ondatachannel = (event) => {
+                const channel = event.channel;
+                logToConsole(`CLIENT: Data channel received: ${channel.label}`);
+
+                channel.onopen = () => {
+                    logToConsole('CLIENT: Data channel opened - Ready to receive video.');
+                    statusDiv.textContent = 'WebRTC Data Channel açıldı. Video akışı bekleniyor...';
+                };
+
+                channel.onmessage = (event) => {
+                    // WebRTC Data Channel üzerinden gelen video frame verisini işle
+                    // logToConsole('CLIENT: Received data via WebRTC Data Channel.');
+                    if (typeof event.data === 'string') {
+                        try {
+                            const frameData = JSON.parse(event.data);
+                            if (frameData.type === 'frame') {
+                                // logToConsole(`CLIENT: Received frame ${frameData.frameNumber} via WebRTC Data Channel.`);
+                                displayVideoFrame(frameData.data); // Canvas'ta göster
+                            }
+                        } catch (e) {
+                            console.warn('CLIENT: Received non-JSON or invalid JSON data via Data Channel:', event.data);
+                            logToConsole(`CLIENT: Received raw data: ${event.data.substring(0, 50)}...`);
+                        }
+                    } else if (event.data instanceof ArrayBuffer) {
+                        // Eğer binary veri gönderiyorsanız burada işlemelisiniz
+                        logToConsole('CLIENT: Received binary data via Data Channel.');
+                        // Örneğin: const blob = new Blob([event.data], { type: 'image/jpeg' });
+                        // img.src = URL.createObjectURL(blob);
+                    }
+                };
+
+                channel.onerror = (error) => {
+                    console.error('CLIENT: Data Channel Error:', error);
+                    logToConsole(`CLIENT: Data Channel Error: ${error.message}`);
+                };
+
+                channel.onclose = () => {
+                    logToConsole('CLIENT: Data Channel Closed.');
+                    statusDiv.textContent = 'WebRTC Data Channel kapandı.';
+                };
+            };
+
+            // Offer oluştur ve gönder
+            peerConnection.createOffer()
+                .then(offer => {
+                    logToConsole('CLIENT: Offer created.');
+                    return peerConnection.setLocalDescription(offer);
+                })
+                .then(() => {
+                    logToConsole('CLIENT: Local description set, sending offer to streamer.');
+                    // Sinyalleşme sunucusu aracılığıyla offer'ı streamer'a gönder
+                    signalingSocket.send(JSON.stringify({
+                        type: 'offer',
+                        offer: peerConnection.localDescription
+                    }));
+                })
+                .catch(error => {
+                    console.error('CLIENT: Error creating offer:', error);
+                    logToConsole(`CLIENT: Error creating offer: ${error.message}`);
+                });
+
+            return peerConnection;
+        }
+
+        // Video frame'i canvas üzerinde gösterme
+        function displayVideoFrame(frameData) {
+            img.onload = () => {
+                ctx.clearRect(0, 0, canvas.width, canvas.height); // Önceki kareyi temizle
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            };
+            img.onerror = (e) => {
+                console.error("CLIENT: Failed to load image:", e);
+                logToConsole("CLIENT: Resim yüklenemedi. Veri formatı hatalı olabilir mi?");
+            };
+            img.src = 'data:image/svg+xml;base64,' + frameData;
+        }
+
+        // Konsola log yazma fonksiyonu
+        function logToConsole(message) {
+            const now = new Date().toLocaleTimeString();
+            dataArea.textContent += `\n[${now}] ${message}`;
+            dataArea.scrollTop = dataArea.scrollHeight; // En alta kaydır
+        }
+
+        // RUN butonuna tıklama olayı
         runBtn.addEventListener('click', () => {
-            console.log('offer sends to signalization server');
-            dataArea.textContent += '\nYayın isteği gönderiliyor...';
+            logToConsole('Yayın isteği gönderiliyor...');
             ws.send(JSON.stringify({ type: 'request_stream' }));
-            runBtn.disabled = true; 
-            statusDiv.textContent = 'waiting for connection'
+            runBtn.disabled = true;
+            statusDiv.textContent = 'Bağlantı bekleniyor...';
         });
     </script>
 </body>
