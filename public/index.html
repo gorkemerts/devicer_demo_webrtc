@@ -6,45 +6,61 @@
 </head>
 <body>
   <h1>Node.js → Browser DataChannel Demo</h1>
+
+  <button id="connectBtn">Bağlan</button>
+  <br><br>
+
   <input id="msg" placeholder="Mesaj yazın">
   <button id="sendBtn">Gönder</button>
 
   <script>
-    const ws = new WebSocket(`ws://${window.location.host}`);
-    let pc, dc;
+    let ws, pc, dc;
+ ws = new WebSocket(`ws://localhost:3000`);
+      ws.onopen = () => (
+        ws.send(JSON.stringify({type : 'client_awake'}))
+      );
+    document.getElementById('connectBtn').onclick = () => {
+     
+      ws.send(JSON.stringify({type:'client_offers'}))
 
-    ws.onmessage = async (event) => {
-      const data = JSON.parse(event.data);
+      ws.onmessage = async (event) => {
+        const data = JSON.parse(event.data);
 
-      if (data.type === 'offer') {
-        pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+        if (data.type === 'offer') {
+          pc = new RTCPeerConnection({
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+          });
 
-        // DataChannel event
-        pc.ondatachannel = (event) => {
-          dc = event.channel;
-          dc.onopen = () => console.log("DataChannel browser tarafında açık!");
-          dc.onmessage = (msg) => console.log("Node.js'ten gelen:", msg.data);
-        };
+          pc.ondatachannel = (event) => {
+            dc = event.channel;
+            dc.onopen = () => console.log("DataChannel browser tarafında açık!");
+            dc.onmessage = (msg) => console.log("Node.js'ten gelen:", msg.data);
+          };
 
-        // ICE candidate
-        pc.onicecandidate = (e) => {
-          if (e.candidate) ws.send(JSON.stringify({ type: 'candidate', candidate: e.candidate }));
-        };
+          // ICE candidate
+          pc.onicecandidate = (e) => {
+            if (e.candidate) {
+              ws.send(JSON.stringify({ type: 'candidate', candidate: e.candidate }));
+            }
+          };
 
-        await pc.setRemoteDescription(data.offer);
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
+          await pc.setRemoteDescription(data.offer);
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
 
-        ws.send(JSON.stringify({ type: 'answer', answer }));
-      } else if (data.type === 'candidate') {
-        await pc.addIceCandidate(data.candidate);
-      }
+          ws.send(JSON.stringify({ type: 'answer', answer }));
+        } else if (data.type === 'candidate') {
+          await pc.addIceCandidate(data.candidate);
+        }
+      };
     };
 
     document.getElementById('sendBtn').onclick = () => {
       if (dc && dc.readyState === 'open') {
         const msg = document.getElementById('msg').value;
         dc.send(msg);
+      } else {
+        console.log("DataChannel açık değil!");
       }
     };
   </script>

@@ -1,154 +1,92 @@
-const { WebSocketServer } = require('ws');
-const express = require("express");
-const path = require("path");
+const express = require('express');
+const http = require('http');
+const WebSocket = require('ws');
+const wrtc = require('wrtc');
+const path = require('path');
 
-const SIGNALIZATION_PORT = 3000;
-const HTTP_PORT = 8080;
-
-const wss = new WebSocketServer({ port: SIGNALIZATION_PORT });
 const app = express();
-
-let streamer = null; // Bağlı olan streamer WebSocket nesnesi
-let viewer = null;   // Bağlı olan viewer WebSocket nesnesi
-
-// Client HTML dosyasını sunmak için HTTP sunucusu
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ port : "3000"});
+let streamer_ws = null ; 
+// public klasörünü servis et
 app.use(express.static(path.join(__dirname, 'public')));
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'client.html'));
-});
 
-app.listen(HTTP_PORT, () => {
-    console.log(`HTTP server => http://localhost:${HTTP_PORT}`);
-});
-console.log(`Signalization server => ws://localhost:${SIGNALIZATION_PORT}`);
+wss.on('connection', ws => {
 
-wss.on('connection', (ws, req) => {
-    console.log(`Yeni bağlantı: ${req.socket.remoteAddress}`);
-
-    ws.on('message', (rawMessage) => {
-        const message = JSON.parse(rawMessage.toString());
-        console.log(`Mesaj alındı (${req.socket.remoteAddress}): ${message.type}`);
+    ws.on('message' , data => {
+        const message = JSON.parse(data.toString());
 
         switch (message.type) {
-            case "client_awake":
-                console.log("Client socket awake.");
-                // Eğer streamer bağlıysa, client'a bilgi verebilirsiniz (isteğe bağlı)
-                // if (streamer) {
-                //     ws.send(JSON.stringify({ type: "streamer_available", status: "online" }));
-                // }
+            case "streamer_awake" : 
+              console.log(message)
+                streamer_ws = ws ;
+                ws.send(JSON.stringify({type : "streamer connected to main"})); 
+                break ; 
+            case 'client_offers' :
+                console.log(message) ; 
+                console.log("mesag streamere iletiliyor") ; 
+                streamer_ws.send(JSON.stringify({type : "client_offers"}));
+                break ; 
+            case 'client_awake' : 
+                console.log(message);
                 break;
 
-            case 'identify_streamer':
-                console.log(`-- Streamer registered from ${req.socket.remoteAddress}`);
-                streamer = ws; // Streamer'ı kaydet
-                // Bu streamer'a özel bir ID atayabilir veya birden fazla streamer desteği ekleyebilirsiniz.
-                break;
+            }          
+             
+})
 
-            case 'request_stream':
-                console.log(`Client (${req.socket.remoteAddress}) requested stream.`);
-                viewer = ws; // Viewer'ı kaydet
-                if (streamer && streamer.readyState === streamer.OPEN) {
-                    // Streamer'a, bir client'ın bağlantı kurmak istediğini bildir
-                    streamer.send(JSON.stringify({ type: 'viewer_wants_to_connect' }));
-                } else {
-                    console.log("Streamer is offline or not registered.");
-                    // Client'a streamer'ın offline olduğunu bildirebilirsiniz
-                    viewer.send(JSON.stringify({ type: "streamer_unavailable", message: "Streamer is currently offline." }));
-                }
-                break;
 
-            case 'streamer_ready': // Streamer'dan gelen onay mesajını client'a ilet
-                console.log(`Streamer (${req.socket.remoteAddress}) is ready, forwarding to viewer.`);
-                if (viewer && viewer.readyState === viewer.OPEN) {
-                    viewer.send(JSON.stringify({
-                        type: 'streamer_ready',
-                        port: message.port // Streamer'ın port bilgisini client'a ilet (bu durumda aslında WebRTC P2P kurulacağı için port sadece bilgi amaçlı)
-                    }));
-                }
-                break;
+    
+  const pc = new wrtc.RTCPeerConnection({
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+  });
 
-            case 'offer': // WebRTC offer, client'tan streamer'a
-                console.log(`WebRTC offer received from client (${req.socket.remoteAddress}), forwarding to streamer.`);
-                if (streamer && streamer.readyState === streamer.OPEN) {
-                    streamer.send(JSON.stringify({
-                        type: 'offer',
-                        offer: message.offer
-                    }));
-                } else {
-                    console.log('Streamer not available to receive offer.');
-                    if (viewer && viewer.readyState === viewer.OPEN) {
-                        viewer.send(JSON.stringify({ type: "error", message: "Streamer is not available to receive offer." }));
-                    }
-                }
-                break;
+  // DataChannel oluştur
+  const dc = pc.createDataChannel('server-to-browser');
+  
+  dc.onopen = () => {
+    console.log("DataChannel açık!");
 
-            case 'webrtc-answer': // WebRTC answer, streamer'dan client'a
-                console.log(`WebRTC answer received from streamer (${req.socket.remoteAddress}), forwarding to client.`);
-                if (viewer && viewer.readyState === viewer.OPEN) {
-                    viewer.send(JSON.stringify({
-                        type: 'webrtc-answer',
-                        answer: message.answer
-                    }));
-                } else {
-                    console.log('Client not available to receive answer.');
-                    if (streamer && streamer.readyState === streamer.OPEN) {
-                        streamer.send(JSON.stringify({ type: "error", message: "Client is not available to receive answer." }));
-                    }
-                }
-                break;
+    // Her saniye mesaj gönder
+    let count = 0;
+    const interval = setInterval(() => {
+      if (dc.readyState === 'open') {
+        dc.send(`Merhaba Browser! Mesaj #${++count} Node.js'ten geliyorum.`);
+      } else {
+        clearInterval(interval); 
+      }
+    }, );
+  };
 
-            case 'ice-candidate': // ICE adayı, her iki yönde de iletilebilir
-                console.log(`ICE candidate received from ${req.socket.remoteAddress}, forwarding...`);
-                if (ws === viewer && streamer && streamer.readyState === streamer.OPEN) {
-                    // Client'tan streamer'a
-                    streamer.send(JSON.stringify({
-                        type: 'ice-candidate',
-                        candidate: message.candidate
-                    }));
-                } else if (ws === streamer && viewer && viewer.readyState === viewer.OPEN) {
-                    // Streamer'dan client'a
-                    viewer.send(JSON.stringify({
-                        type: 'ice-candidate',
-                        candidate: message.candidate
-                    }));
-                } else {
-                    console.warn(`ICE candidate received but no suitable peer to forward to. From: ${req.socket.remoteAddress}`);
-                }
-                break;
+  dc.onmessage = msg => console.log("Browser'dan gelen mesaj:", msg.data);
 
-            // 'video-frame' tipi artık WebRTC Data Channel üzerinden doğrudan iletilecek.
-            // Sinyalleşme sunucusunun bu mesajı görmemesi gerekiyor.
-            case 'video-frame':
-                console.warn(`Sinyalleşme sunucusuna 'video-frame' mesajı geldi. Bu mesaj WebRTC Data Channel üzerinden doğrudan iletilmeliydi. Yoksayılıyor.`);
-                break;
+  // ICE candidate geldiğinde WebSocket ile gönder
+  pc.onicecandidate = ({ candidate }) => {
+    if (candidate) ws.send(JSON.stringify({ type: 'candidate', candidate }));
+  };
 
-            default:
-                console.log(`Bilinmeyen mesaj tipi: ${message.type} from ${req.socket.remoteAddress}`);
-                break;
-        }
-    });
+  // Browser'dan gelen mesajları handle et
+  ws.on('message', async message => {
+    const data = JSON.parse(message);
 
-    ws.on('close', () => {
-        console.log(`Bağlantı kesildi: ${req.socket.remoteAddress}`);
-        if (ws === streamer) {
-            console.log('Streamer bağlantısı kesildi.');
-            streamer = null;
-            // Streamer offline olduğunda client'a bilgi gönderebiliriz
-            if (viewer && viewer.readyState === viewer.OPEN) {
-                viewer.send(JSON.stringify({ type: "streamer_offline", message: "Streamer disconnected." }));
-            }
-        }
-        if (ws === viewer) {
-            console.log('Viewer bağlantısı kesildi.');
-            viewer = null;
-            // Viewer offline olduğunda streamer'a bilgi gönderebiliriz (isteğe bağlı)
-            // if (streamer && streamer.readyState === streamer.OPEN) {
-            //     streamer.send(JSON.stringify({ type: "viewer_disconnected", message: "Viewer disconnected." }));
-            // }
-        }
-    });
+    if (data.type === 'answer') {
+      await pc.setRemoteDescription(data.answer);
+    } else if (data.type === 'candidate') {
+        console.log("mine",data.candidate);
+      await pc.addIceCandidate(data.candidate);
+      console.log("ICE candidate eklendi.");
+    }
+  });
 
-    ws.on('error', (error) => {
-        console.error(`WebSocket hata (${req.socket.remoteAddress}):`, error.message);
-    });
+  // Offer oluştur ve WebSocket ile gönder
+  (async () => {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    ws.send(JSON.stringify({ type: 'offer', offer }));
+    console.log("Offer gönderildi.");
+  })();
+});
+
+server.listen(8080, () => {
+  console.log("HTTP + WebSocket server running on http://localhost:8080");
 });
