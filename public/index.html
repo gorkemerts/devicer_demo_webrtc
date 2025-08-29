@@ -2,47 +2,61 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>DataChannel Public Demo</title>
+  <title>DataChannel Video + Log + Chat Demo</title>
 </head>
 <body>
-  <h1>Node.js → Browser DataChannel Demo</h1>
+  <h1>Node.js → Browser DataChannel Video + Chat Demo</h1>
 
   <button id="connectBtn">Bağlan</button>
   <br><br>
 
-  <input id="msg" placeholder="Mesaj yazın">
+  <canvas id="videoCanvas" width="640" height="360" style="border:1px solid black;"></canvas>
+  <br><br>
+
+  <input id="msgInput" placeholder="Mesaj yazın">
   <button id="sendBtn">Gönder</button>
 
   <script>
     let ws, pc, dc;
- ws = new WebSocket(`ws://localhost:3000`);
-      ws.onopen = () => (
-        ws.send(JSON.stringify({type : 'client_awake'}))
-      );
+    const canvas = document.getElementById('videoCanvas');
+    const ctx = canvas.getContext('2d');
+    let img = new Image();
+
+    ws = new WebSocket('ws://localhost:3000');
+    ws.onopen = () => {
+      console.log("Signalizasyon sunucusuna bağlandı");
+      ws.send(JSON.stringify({ type: 'client_awake' }));
+    };
+
     document.getElementById('connectBtn').onclick = () => {
-     
-      ws.send(JSON.stringify({type:'client_offers'}))
+      ws.send(JSON.stringify({ type: 'client_offers' }));
 
       ws.onmessage = async (event) => {
         const data = JSON.parse(event.data);
-        console.log("ws_msg;",data);
 
         if (data.type === 'stream_offer') {
-          console.log("streameroffer has come");
-          pc = new RTCPeerConnection({
-            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-          });
+          pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
 
           pc.ondatachannel = (event) => {
             dc = event.channel;
-            dc.onopen = () => console.log("DataChannel browser tarafında açık!");
-            dc.onmessage = (msg) => console.log("Node.js'ten gelen:", msg.data);
+            dc.onopen = () => console.log("DataChannel açıldı!");
+
+            // Gelen frame'leri canvas'a çiz ve logla
+            dc.onmessage = (msg) => {
+              console.log("Frame geldi");
+
+              const blob = new Blob([msg.data], { type: 'image/jpeg' });
+              const url = URL.createObjectURL(blob);
+              img.onload = () => {
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                URL.revokeObjectURL(url);
+              };
+              img.src = url;
+            };
           };
 
-          // ICE candidate
           pc.onicecandidate = (e) => {
             if (e.candidate) {
-              console.log("candidate yollaniyor"); 
               ws.send(JSON.stringify({ type: 'candidate', candidate: e.candidate }));
             }
           };
@@ -51,19 +65,21 @@
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
           ws.send(JSON.stringify({ type: 'answer', answer }));
-        } else if (data.type === 'streamer_candidate') {
-          console.log("streamer_candidate_geldi");
+        } 
+        else if (data.type === 'streamer_candidate') {
           await pc.addIceCandidate(data.candidate);
         }
       };
     };
 
+    // Mesaj gönderme
     document.getElementById('sendBtn').onclick = () => {
+      const msg = document.getElementById('msgInput').value;
       if (dc && dc.readyState === 'open') {
-        const msg = document.getElementById('msg').value;
         dc.send(msg);
+        console.log("Gönderilen mesaj:", msg);
       } else {
-        console.log("DataChannel açık değil!");
+        console.log("DataChannel henüz açık değil!");
       }
     };
   </script>
