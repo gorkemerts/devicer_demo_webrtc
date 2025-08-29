@@ -28,17 +28,15 @@ ws.on('message', async data => {
             console.log("offer" , offer);
             await pc.setLocalDescription(offer);
             ws.send(JSON.stringify({ type: 'stream_offer',  offer }));
-        })();
-         
-
-          if (message.type === 'answer') {
+        })();}
+  
+          else if (message.type === 'answer') {
+            console.log("answerhascome")
             await pc.setRemoteDescription(message.answer);
           } 
-          else if (message.type === 'candidate') {
+          else if (message.type === 'client_candidate') {
             await pc.addIceCandidate(message.candidate);
             console.log("ICE candidate eklendi.");
-    }
-
     }
 });
 

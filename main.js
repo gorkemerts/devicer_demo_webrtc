@@ -34,6 +34,9 @@ wss.on('connection', ws => {
             case 'client_awake' : 
                 viever_ws = ws ; 
                 break;
+            case 'client_candidate': 
+                streamer_ws.send(message);
+                break ;
             case 'stream_offer' : 
                 console.log("streamoffersended");
                 viever_ws.send(JSON.stringify(message)); 
