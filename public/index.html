@@ -25,8 +25,10 @@
 
       ws.onmessage = async (event) => {
         const data = JSON.parse(event.data);
+        console.log("ws_msg;",data);
 
-        if (data.type === 'offer') {
+        if (data.type === 'stream_offer') {
+          console.log("streameroffer has come");
           pc = new RTCPeerConnection({
             iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
           });
@@ -40,6 +42,7 @@
           // ICE candidate
           pc.onicecandidate = (e) => {
             if (e.candidate) {
+              console.log("candidate yollaniyor"); 
               ws.send(JSON.stringify({ type: 'candidate', candidate: e.candidate }));
             }
           };
@@ -47,9 +50,9 @@
           await pc.setRemoteDescription(data.offer);
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
-
           ws.send(JSON.stringify({ type: 'answer', answer }));
-        } else if (data.type === 'candidate') {
+        } else if (data.type === 'streamer_candidate') {
+          console.log("streamer_candidate_geldi");
           await pc.addIceCandidate(data.candidate);
         }
       };
