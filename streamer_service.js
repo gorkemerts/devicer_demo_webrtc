@@ -25,15 +25,20 @@ ws.on('message', async (data) => {
         dc.onopen = () => {
             console.log("DataChannel open, starting FFmpeg stream...");
 
-            const ffmpegArgs = [
-                '-f', 'dshow',
-                '-i', 'video=OBS Virtual Camera',
-                '-vf', 'fps=60',
-                '-q:v', '5',
+            // start emulator with theese command => emulator -avd Medium_Phone_API_36.0 -gpu swiftshader_indirect
+                    const ffmpegArgs = [
+                '-f', 'gdigrab',
+                '-framerate', '30',
+                '-offset_x', '0',      
+                '-offset_y', '0',
+                '-video_size', '412x916', 
+                '-i', 'title=Android Emulator - Medium_Phone_API_36.0:5554', 
+                '-r', '30',
                 '-f', 'image2pipe',
                 '-c:v', 'mjpeg',
                 '-'
-            ];
+                ];
+
 
             const ffmpeg = spawn('ffmpeg', ffmpegArgs);
             activeFfmpegProcess = ffmpeg;

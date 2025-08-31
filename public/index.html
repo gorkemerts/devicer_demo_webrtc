@@ -2,10 +2,10 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>DataChannel Video + Log + Chat Demo</title>
+  <title>wbrtc demo v1</title>
 </head>
 <body>
-  <h1>Node.js → Browser DataChannel Video + Chat Demo</h1>
+  <h1>wbrtc demo v1</h1>
 
   <button id="connectBtn">Bağlan</button>
   <br><br>
@@ -42,17 +42,25 @@
             dc.onopen = () => console.log("DataChannel açıldı!");
 
             // Gelen frame'leri canvas'a çiz ve logla
-            dc.onmessage = (msg) => {
-              console.log("Frame geldi");
+           dc.onmessage = (msg) => {
+    // Gelen JPEG verisini Blob olarak oluştur
+    const blob = new Blob([msg.data], { type: 'image/jpeg' });
+    const url = URL.createObjectURL(blob);
 
-              const blob = new Blob([msg.data], { type: 'image/jpeg' });
-              const url = URL.createObjectURL(blob);
-              img.onload = () => {
-                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                URL.revokeObjectURL(url);
-              };
-              img.src = url;
-            };
+    const img = new Image();
+    img.onload = () => {
+        // Canvas boyutunu frame çözünürlüğüne göre ayarla
+        canvas.width = img.width;
+        canvas.height = img.height;
+
+        // Canvas'a frame'i çiz
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+        // Geçici URL'i temizle
+        URL.revokeObjectURL(url);
+    };
+    img.src = url;
+};
           };
 
           pc.onicecandidate = (e) => {
