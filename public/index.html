@@ -122,8 +122,9 @@
     #videoCanvas {
       width: 100%;
       height: 100%;
-      object-fit: cover;
+      object-fit: contain;
       border-radius: 20px;
+      background: #000;
     }
 
     .video-overlay {
@@ -138,6 +139,7 @@
       justify-content: center;
       color: #fff;
       font-size: 16px;
+      text-align: center;
       border-radius: 0px;
       opacity: 0;
       transition: opacity 0.3s ease;
@@ -316,7 +318,7 @@
         </div>
 
         <div class="video-container">
-          <canvas id="videoCanvas" width="1080" height="2400"></canvas>
+          <canvas id="videoCanvas"></canvas>
           <div class="video-overlay" id="videoOverlay">
             <div>📹 Video akışı için bağlanın</div>
           </div>
@@ -332,7 +334,7 @@
       </div>
 
       <div class="chat-container">
-        <input id="msgInput" class="message-input" placeholder="💬 Mesaj yazın...">
+        <input id="msgInput" class="message-input" placeholder="💬 Mesaj yazın (/files, /photos, /downloads)">
         <button id="sendBtn" class="send-btn" disabled>
           <span>📤 Gönder</span>
         </button>
@@ -344,7 +346,23 @@
     let ws, pc, dc;
     const canvas = document.getElementById('videoCanvas');
     const ctx = canvas.getContext('2d');
-    let img = new Image();
+    
+    // Canvas boyutunu başlangıçta ayarla
+    function initCanvas() {
+      const container = canvas.parentElement;
+      const containerRect = container.getBoundingClientRect();
+      canvas.width = containerRect.width;
+      canvas.height = containerRect.height;
+      
+      // Canvas'ı siyah yap
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+    
+    initCanvas();
+    
+    // Pencere boyutu değiştiğinde canvas'ı yeniden boyutlandır
+    window.addEventListener('resize', initCanvas);
 
     // UI elementleri
     const connectBtn = document.getElementById('connectBtn');
@@ -352,6 +370,132 @@
     const msgInput = document.getElementById('msgInput');
     const connectionStatus = document.getElementById('connectionStatus');
     const videoOverlay = document.getElementById('videoOverlay');
+
+    // Data mesajlarını işleme fonksiyonu
+    function handleDataMessage(data) {
+      console.log("Telefon verisi alındı:", data.type);
+      
+      switch (data.type) {
+        case 'phone_info':
+          console.log("📱 Telefon Bilgileri:", data.data);
+          updateConnectionStatus(`📱 ${data.data.brand} ${data.data.model}`, true);
+          break;
+          
+        case 'file_list':
+          console.log("📁 Dosya Listesi:", data.files);
+          displayFileList(data.files);
+          break;
+          
+        case 'file_pulled':
+          if (data.success) {
+            console.log("✅ Dosya başarıyla çekildi:", data.localPath);
+            showNotification("✅ Dosya indirildi: " + data.localPath.split('/').pop());
+          }
+          break;
+          
+        case 'app_data':
+          console.log("📱 Uygulama Verisi:", data.data);
+          break;
+          
+        case 'bulk_transfer_complete':
+          console.log("📦 Toplu transfer tamamlandı:", data.results);
+          const successCount = data.results.filter(r => r.success).length;
+          showNotification(`✅ ${successCount}/${data.results.length} dosya indirildi`);
+          break;
+          
+        case 'error':
+          console.error("❌ Sunucu hatası:", data.message);
+          showNotification("❌ Hata: " + data.message);
+          break;
+      }
+    }
+
+    // Dosya listesini gösterme
+    function displayFileList(files) {
+      console.log("📁 Telefon Dosyaları:");
+      files.forEach(file => {
+        if (file.trim()) console.log("  ", file);
+      });
+      showNotification(`📂 ${files.length} dosya listelendi (konsola bakın)`);
+    }
+
+    // Bildirim gösterme
+    function showNotification(message) {
+      const overlay = document.getElementById('videoOverlay');
+      overlay.innerHTML = `<div>${message}</div>`;
+      overlay.classList.add('show');
+      setTimeout(() => {
+        overlay.classList.remove('show');
+      }, 3000);
+    }
+
+    // Telefon verilerini çekmek için komut gönderme
+    function sendDataCommand(command) {
+      if (dc && dc.readyState === 'open') {
+        dc.send(JSON.stringify(command));
+      } else {
+        console.log("❌ DataChannel henüz açık değil!");
+        showNotification("❌ Önce bağlantı kurun");
+      }
+    }
+
+    // Özel komutları işleme
+    function handleSpecialCommands(command) {
+      const cmd = command.toLowerCase();
+      
+      if (cmd === '/files' || cmd === '/ls') {
+        sendDataCommand({ type: 'list_files', directory: '/sdcard/' });
+        showNotification("📂 Dosyalar listeleniyor...");
+      }
+      else if (cmd === '/photos') {
+        sendDataCommand({ type: 'list_files', directory: '/sdcard/DCIM/Camera/' });
+        showNotification("📸 Fotoğraflar listeleniyor...");
+      }
+      else if (cmd === '/downloads') {
+        sendDataCommand({ type: 'list_files', directory: '/sdcard/Download/' });
+        showNotification("⬇️ İndirilenler listeleniyor...");
+      }
+      else if (cmd.startsWith('/pull ')) {
+        const filePath = cmd.substring(6);
+        const fileName = filePath.split('/').pop();
+        sendDataCommand({ 
+          type: 'pull_file', 
+          remotePath: filePath, 
+          localPath: `./downloads/${fileName}` 
+        });
+        showNotification(`⬇️ Dosya indiriliyor: ${fileName}`);
+      }
+      else if (cmd === '/info') {
+        showNotification("📱 Telefon bilgileri alınıyor...");
+      }
+      else if (cmd === '/help') {
+        showNotification("📋 Komutlar: /files, /photos, /downloads, /pull [yol], /info");
+      }
+      else {
+        showNotification("❓ Bilinmeyen komut. /help yazın");
+      }
+    }
+
+    // Browser konsolu için yardımcı fonksiyonlar
+    window.listFiles = (dir = '/sdcard/') => {
+      sendDataCommand({ type: 'list_files', directory: dir });
+    };
+
+    window.pullFile = (remotePath, localPath) => {
+      sendDataCommand({ type: 'pull_file', remotePath, localPath });
+    };
+
+    window.pullPhotos = () => {
+      sendDataCommand({ 
+        type: 'pull_multiple', 
+        fileList: ['/sdcard/DCIM/Camera/'],
+        localDir: './photos'
+      });
+    };
+
+    window.getAppData = (packageName) => {
+      sendDataCommand({ type: 'get_app_data', packageName });
+    };
 
     // Saat güncelleme
     function updateTime() {
@@ -419,18 +563,48 @@
             };
 
             dc.onmessage = (msg) => {
-              console.log(msg); 
-              const blob = new Blob([msg.data], { type: 'image/jpeg' });
-              const url = URL.createObjectURL(blob);
+              // String mesaj (JSON) mı yoksa binary data (JPEG) mı kontrol et
+              if (typeof msg.data === 'string') {
+                try {
+                  const jsonData = JSON.parse(msg.data);
+                  handleDataMessage(jsonData);
+                } catch (e) {
+                  console.log("String mesaj:", msg.data);
+                }
+              } else {
+                // Binary data - JPEG frame
+                const blob = new Blob([msg.data], { type: 'image/jpeg' });
+                const url = URL.createObjectURL(blob);
 
-              const img = new Image();
-              img.onload = () => {
-                canvas.width = img.width;
-                canvas.height = img.height;
-                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                URL.revokeObjectURL(url);
-              };
-              img.src = url;
+                const img = new Image();
+                img.onload = () => {
+                  // Canvas boyutunu container'a göre ayarla
+                  const container = canvas.parentElement;
+                  const containerRect = container.getBoundingClientRect();
+                  
+                  // Aspect ratio'yu koru
+                  const imgAspect = img.width / img.height;
+                  const containerAspect = containerRect.width / containerRect.height;
+                  
+                  if (imgAspect > containerAspect) {
+                    canvas.width = containerRect.width;
+                    canvas.height = containerRect.width / imgAspect;
+                  } else {
+                    canvas.height = containerRect.height;
+                    canvas.width = containerRect.height * imgAspect;
+                  }
+                  
+                  // Canvas'ı temizle ve görüntüyü çiz
+                  ctx.clearRect(0, 0, canvas.width, canvas.height);
+                  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                  URL.revokeObjectURL(url);
+                };
+                img.onerror = () => {
+                  console.error("JPEG decode hatası");
+                  URL.revokeObjectURL(url);
+                };
+                img.src = url;
+              }
             };
 
             dc.onclose = () => {
@@ -471,8 +645,13 @@
     function sendMessage() {
       const msg = msgInput.value.trim();
       if (msg && dc && dc.readyState === 'open') {
-        dc.send(msg);
-        console.log("Gönderilen mesaj:", msg);
+        // Özel komutları kontrol et
+        if (msg.startsWith('/')) {
+          handleSpecialCommands(msg);
+        } else {
+          dc.send(msg);
+          console.log("Gönderilen mesaj:", msg);
+        }
         msgInput.value = '';
         
         // Gönderim animasyonu
@@ -488,6 +667,22 @@
 
     // Video overlay başlangıçta göster
     videoOverlay.classList.add('show');
+
+    // Konsola yardım mesajı
+    console.log(`
+📱 ADB Data Transfer Komutları:
+• listFiles('/sdcard/Pictures/') - Dosya listele
+• pullFile('/sdcard/Download/foto.jpg', './foto.jpg') - Dosya çek
+• pullPhotos() - Tüm fotoğrafları çek
+• getAppData('com.whatsapp') - Uygulama verisi
+
+💬 Mesaj kutusundan:
+• /files - Ana dizin
+• /photos - Fotoğraflar 
+• /downloads - İndirilenler
+• /pull /yol/dosya.jpg - Dosya çek
+• /help - Yardım
+    `);
   </script>
 </body>
 </html>

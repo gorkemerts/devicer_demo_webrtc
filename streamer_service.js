@@ -1,6 +1,8 @@
 const WebSocket = require('ws');
 const wrtc = require('wrtc');
 const { spawn } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 
 const SIGNALING_SERVER_URL = 'ws://localhost:3000';
 const ws = new WebSocket(SIGNALING_SERVER_URL);
@@ -8,6 +10,101 @@ const ws = new WebSocket(SIGNALING_SERVER_URL);
 let pc, dc;
 let activeFfmpegProcess = null;
 let activeAdbProcess = null;
+
+// Telefon verilerini çekmek için yeni fonksiyonlar
+async function pullFileFromPhone(remotePath, localPath) {
+    return new Promise((resolve, reject) => {
+        const pullProcess = spawn('adb', ['pull', remotePath, localPath]);
+        
+        pullProcess.on('close', (code) => {
+            if (code === 0) {
+                console.log(`File pulled: ${remotePath} -> ${localPath}`);
+                resolve(localPath);
+            } else {
+                reject(new Error(`ADB pull failed with code ${code}`));
+            }
+        });
+        
+        pullProcess.on('error', reject);
+    });
+}
+
+async function getPhoneInfo() {
+    return new Promise((resolve, reject) => {
+        const infoProcess = spawn('adb', ['shell', 'getprop']);
+        let output = '';
+        
+        infoProcess.stdout.on('data', (data) => {
+            output += data.toString();
+        });
+        
+        infoProcess.on('close', () => {
+            const info = {};
+            const lines = output.split('\n');
+            lines.forEach(line => {
+                const match = line.match(/\[(.*?)\]: \[(.*?)\]/);
+                if (match) {
+                    info[match[1]] = match[2];
+                }
+            });
+            resolve(info);
+        });
+        
+        infoProcess.on('error', reject);
+    });
+}
+
+async function listPhoneFiles(directory) {
+    return new Promise((resolve, reject) => {
+        const listProcess = spawn('adb', ['shell', 'ls', '-la', directory]);
+        let output = '';
+        
+        listProcess.stdout.on('data', (data) => {
+            output += data.toString();
+        });
+        
+        listProcess.on('close', () => {
+            resolve(output.split('\n').filter(line => line.trim()));
+        });
+        
+        listProcess.on('error', reject);
+    });
+}
+
+async function getAppData(packageName) {
+    return new Promise((resolve, reject) => {
+        const dataProcess = spawn('adb', ['shell', 'dumpsys', 'package', packageName]);
+        let output = '';
+        
+        dataProcess.stdout.on('data', (data) => {
+            output += data.toString();
+        });
+        
+        dataProcess.on('close', () => {
+            resolve(output);
+        });
+        
+        dataProcess.on('error', reject);
+    });
+}
+
+// Toplu dosya transferi
+async function pullMultipleFiles(fileList, localDir) {
+    const results = [];
+    
+    for (const remotePath of fileList) {
+        try {
+            const fileName = path.basename(remotePath);
+            const localPath = path.join(localDir, fileName);
+            await pullFileFromPhone(remotePath, localPath);
+            results.push({ success: true, file: remotePath, localPath });
+        } catch (error) {
+            results.push({ success: false, file: remotePath, error: error.message });
+        }
+    }
+    
+    return results;
+}
 
 ws.on('open', () => {
     console.log("Connected to signaling server");
@@ -25,12 +122,28 @@ ws.on('message', async (data) => {
 
         dc = pc.createDataChannel('server-to-browser');
 
-        dc.onopen = () => {
+        dc.onopen = async () => {
             console.log("DataChannel open, starting ADB + FFmpeg stream...");
+
+            // Telefon bilgilerini al ve gönder
+            try {
+                const phoneInfo = await getPhoneInfo();
+                dc.send(JSON.stringify({
+                    type: 'phone_info',
+                    data: {
+                        model: phoneInfo['ro.product.model'],
+                        brand: phoneInfo['ro.product.brand'],
+                        version: phoneInfo['ro.build.version.release'],
+                        sdk: phoneInfo['ro.build.version.sdk']
+                    }
+                }));
+            } catch (error) {
+                console.error("Phone info error:", error);
+            }
 
             // 1️⃣ ADB screenrecord process
             activeAdbProcess = spawn('adb', [
-                'shell', 'screenrecord', '--output-format=h264', '--bit-rate 4000000' ,'-'
+                'shell', 'screenrecord', '--output-format=h264', '--bit-rate 4000000', '-'
             ]);
 
             activeAdbProcess.stderr.on('data', data => {
@@ -46,19 +159,17 @@ ws.on('message', async (data) => {
                 console.error("ADB error:", err);
             });
 
-        // 2️⃣ FFmpeg process: H.264 -> MJPEG -> DataChannel
-        const ffmpeg = spawn('ffmpeg', [
-    '-f', 'h264',          // Explicitly state input format is H.264
-    '-i', 'pipe:0',        // stdin'den al
-    '-f', 'image2pipe',    // stdout pipe
-    '-c:v', 'mjpeg',       // MJPEG formatı
-    '-q:v', '5',           // kalite
-    'pipe:1'
-]);
+            // 2️⃣ FFmpeg process: H.264 -> MJPEG -> DataChannel
+            const ffmpeg = spawn('ffmpeg', [
+                '-f', 'h264',          
+                '-i', 'pipe:0',        
+                '-f', 'image2pipe',    
+                '-c:v', 'mjpeg',       
+                '-q:v', '5',           
+                'pipe:1'
+            ]);
 
             activeFfmpegProcess = ffmpeg;
-
-            // pipe adb stdout -> ffmpeg stdin
             activeAdbProcess.stdout.pipe(ffmpeg.stdin);
 
             let jpegBuffer = Buffer.alloc(0);
@@ -69,24 +180,17 @@ ws.on('message', async (data) => {
                 let start_index = 0;
                 while (true) {
                     const start = jpegBuffer.indexOf(Buffer.from([0xFF, 0xD8]), start_index);
-                    if (start === -1) { // No start of frame found from current start_index
-                        break;
-                    }
+                    if (start === -1) break;
 
                     const end = jpegBuffer.indexOf(Buffer.from([0xFF, 0xD9]), start + 2);
-                    if (end === -1) { // Start found, but no end yet (partial frame)
-                        // Keep this chunk in buffer, wait for more data
-                        break;
-                    }
+                    if (end === -1) break;
 
-                    // Full JPEG frame found
                     const jpeg_data = jpegBuffer.slice(start, end + 2);
                     if (dc.readyState === 'open') {
                         dc.send(jpeg_data);
                     }
-                    start_index = end + 2; // Move past this frame
+                    start_index = end + 2;
                 }
-                // Keep any remaining partial data at the beginning of the buffer
                 jpegBuffer = jpegBuffer.slice(start_index);
             });
 
@@ -105,7 +209,57 @@ ws.on('message', async (data) => {
             });
         };
 
-        dc.onmessage = (msg) => console.log("DataChannel message from client:", msg.data);
+        // DataChannel'dan gelen komutları işle
+        dc.onmessage = async (msg) => {
+            console.log("DataChannel message from client:", msg.data);
+            
+            try {
+                const command = JSON.parse(msg.data);
+                
+                switch (command.type) {
+                    case 'pull_file':
+                        const result = await pullFileFromPhone(command.remotePath, command.localPath);
+                        dc.send(JSON.stringify({
+                            type: 'file_pulled',
+                            success: true,
+                            localPath: result
+                        }));
+                        break;
+                        
+                    case 'list_files':
+                        const files = await listPhoneFiles(command.directory || '/sdcard/');
+                        dc.send(JSON.stringify({
+                            type: 'file_list',
+                            files: files
+                        }));
+                        break;
+                        
+                    case 'get_app_data':
+                        const appData = await getAppData(command.packageName);
+                        dc.send(JSON.stringify({
+                            type: 'app_data',
+                            data: appData
+                        }));
+                        break;
+                        
+                    case 'pull_multiple':
+                        const transferResults = await pullMultipleFiles(
+                            command.fileList, 
+                            command.localDir || './downloads'
+                        );
+                        dc.send(JSON.stringify({
+                            type: 'bulk_transfer_complete',
+                            results: transferResults
+                        }));
+                        break;
+                }
+            } catch (error) {
+                dc.send(JSON.stringify({
+                    type: 'error',
+                    message: error.message
+                }));
+            }
+        };
 
         pc.onicecandidate = ({ candidate }) => {
             if (candidate) {
@@ -129,8 +283,18 @@ ws.on('message', async (data) => {
     }
 });
 
-// process exit cleanup
-process.on('exit', () => {
-    if (activeFfmpegProcess) activeFfmpegProcess.kill('SIGINT');
-    if (activeAdbProcess) activeAdbProcess.kill('SIGINT');
-});
+// Cleanup fonksiyonu
+function cleanup() {
+    if (activeFfmpegProcess) {
+        activeFfmpegProcess.kill('SIGINT');
+        activeFfmpegProcess = null;
+    }
+    if (activeAdbProcess) {
+        activeAdbProcess.kill('SIGINT');
+        activeAdbProcess = null;
+    }
+}
+
+process.on('exit', cleanup);
+process.on('SIGINT', cleanup);
+process.on('SIGTERM', cleanup);
