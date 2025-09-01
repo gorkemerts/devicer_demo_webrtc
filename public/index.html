@@ -146,6 +146,7 @@
 
     .video-overlay.show {
       opacity: 1;
+      z-index: 10;
     }
 
     .controls {
@@ -278,11 +279,16 @@
         width: 100%;
       }
       
-      .phone-container {
-        height: 70vh;
-        border-radius: 20px;
-        padding: 15px;
-      }
+       .phone-container {
+      width: 432px;
+      height: 936px;
+      background: #1a1a1a;
+      border-radius: 35px;
+      padding: 10px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      position: relative;
+      overflow: hidden;
+    }
       
       .screen {
         border-radius: 15px;
@@ -397,7 +403,7 @@
 
       ws.onmessage = async (event) => {
         const data = JSON.parse(event.data);
-
+        console.log(data); 
         if (data.type === 'stream_offer') {
           pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
 
@@ -413,6 +419,7 @@
             };
 
             dc.onmessage = (msg) => {
+              console.log(msg); 
               const blob = new Blob([msg.data], { type: 'image/jpeg' });
               const url = URL.createObjectURL(blob);
 
