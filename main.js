@@ -9,7 +9,6 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({ port : "3000"});
 let streamer_ws = null ; 
 let viever_ws = null ; 
-// public klasörünü servis et
 app.use(express.static(path.join(__dirname, 'public')));
 
 wss.on('connection', ws => {

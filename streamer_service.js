@@ -26,9 +26,9 @@ ws.on('message', async (data) => {
             console.log("DataChannel open, starting FFmpeg stream...");
 
             // start emulator with theese command => emulator -avd Medium_Phone_API_36.0 -gpu swiftshader_indirect
-                    const ffmpegArgs = [
+                const ffmpegArgs = [
                 '-f', 'gdigrab',
-                '-framerate', '30',
+                '-framerate', '60',
                 '-offset_x', '0',      
                 '-offset_y', '0',
                 '-video_size', '412x916', 
@@ -57,7 +57,6 @@ ws.on('message', async (data) => {
 
                     const jpeg_data = jpegBuffer.slice(start, end + 2);
                     if (dc.readyState === 'open') {
-                        // Binary olarak DataChannel üzerinden gönder
                         dc.send(jpeg_data);
                     }
                     start_index = end + 2;
@@ -89,7 +88,6 @@ ws.on('message', async (data) => {
             }
         };
 
-        // Offer oluştur ve gönder
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
         ws.send(JSON.stringify({ type: 'stream_offer', offer }));
