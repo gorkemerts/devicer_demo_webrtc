@@ -11,9 +11,7 @@ let pc, dc;
 let activeFfmpegProcess = null;
 let activeAdbProcess = null;
 
-// --- Telefon Veri Fonksiyonları ---
-
-// Telefondan dosya çekme
+// adb tcpip 5555
 async function pullFileFromPhone(remotePath, localPath) {
     return new Promise((resolve, reject) => {
         // Hedef dizinin var olup olmadığını kontrol et, yoksa oluştur
@@ -139,72 +137,70 @@ ws.on('message', async (data) => {
 
         dc = pc.createDataChannel('server-to-browser');
 
-         dc.onopen = async () => {
-            console.log("DataChannel açıldı, TCP üzerinden ADB + FFmpeg akışı başlatılıyor...");
+                  dc.onopen = async () => {
+            console.log("DataChannel açıldı, en kararlı yöntemle akış başlatılıyor (screenrecord + TCP)...");
 
-            // --- 1. Telefon Bilgilerini Gönder ---
+            const runCommand = (command, args) => {
+                return new Promise((resolve, reject) => {
+                    const process = spawn(command, args);
+                    let stderr = '';
+                    process.stderr.on('data', (data) => stderr += data.toString());
+                    process.on('close', (code) => {
+                        if (code === 0) resolve();
+                        else reject(new Error(`Komut '${command} ${args.join(' ')}' ${code} koduyla başarısız oldu. Hata: ${stderr}`));
+                    });
+                    process.on('error', (err) => reject(err));
+                });
+            };
+
             try {
-                const phoneInfo = await getPhoneInfo();
-                dc.send(JSON.stringify({
-                    type: 'phone_info',
-                    data: {
-                        model: phoneInfo['ro.product.model'] || 'Bilinmiyor',
-                        brand: phoneInfo['ro.product.brand'] || 'Bilinmiyor',
-                        version: phoneInfo['ro.build.version.release'] || 'Bilinmiyor',
-                        sdk: phoneInfo['ro.build.version.sdk'] || 'Bilinmiyor'
-                    }
-                }));
-            } catch (error) {
-                console.error("Telefon bilgileri alınırken hata:", error);
-            }
+                // Değişkenler
+                const LOCAL_TCP_PORT = 54321;
+                const DEVICE_TCP_PORT = 12345; // screenrecord için farklı bir port kullanalım
 
-            // --- 2. ADB TCP Tünelini Kur ---
-            const LOCAL_TCP_PORT = 54321;
-            const DEVICE_TCP_PORT = 12345;
+                console.log("Adım 1: Telefon bilgileri gönderiliyor...");
+                await getPhoneInfo().then(phoneInfo => dc.send(JSON.stringify({ type: 'phone_info', data: phoneInfo })));
 
-            // Önceki yönlendirmeleri temizle (güvenlik için)
-            spawn('adb', ['forward', '--remove', `tcp:${LOCAL_TCP_PORT}`]);
+                console.log("Adım 2: ADB TCP tüneli kuruluyor...");
+                await runCommand('adb', ['forward', '--remove-all']);
+                await runCommand('adb', ['forward', `tcp:${LOCAL_TCP_PORT}`, `tcp:${DEVICE_TCP_PORT}`]);
 
-            const forwardProcess = spawn('adb', ['forward', `tcp:${LOCAL_TCP_PORT}`, `tcp:${DEVICE_TCP_PORT}`]);
-            forwardProcess.on('close', (code) => {
-                if (code !== 0) {
-                    console.error(`ADB forward işlemi ${code} koduyla başarısız oldu!`);
-                    return;
-                }
-                console.log(`ADB tüneli kuruldu: localhost:${LOCAL_TCP_PORT} -> device:${DEVICE_TCP_PORT}`);
-
-                // --- 3. Telefonda `screenrecord` ve `netcat`'i Başlat ---
-                // Bu komut, video akışını telefondaki bir ağ soketine yönlendirir.
+                console.log("Adım 3: Telefonda 'screenrecord' ve 'netcat' başlatılıyor...");
+                // netcat (nc), screenrecord'un çıktısını bir TCP portuna yönlendirir.
+                // Bu komutun çalışması için telefonda 'nc' komutunun olması gerekir. Çoğu telefonda bulunur.
                 const shellCommand = `screenrecord --output-format=h264 --size=720x1280 --bit-rate=2000000 - | nc -l -p ${DEVICE_TCP_PORT}`;
                 activeAdbProcess = spawn('adb', ['shell', shellCommand]);
                 
-                activeAdbProcess.stderr.on('data', data => console.log(`ADB shell log: ${data}`));
+                activeAdbProcess.stderr.on('data', data => console.error(`[ADB SHELL HATA]: ${data.toString()}`));
                 activeAdbProcess.on('close', code => {
                     console.log(`ADB shell işlemi sonlandı, kod: ${code}`);
                     cleanup();
                 });
+                    let brightnessToggle = false; 
+                       triggerInterval = setInterval(() => {
+                console.log('auto trigger'); // Hata ayıklama için
 
-                // --- 4. FFmpeg'i TCP Tünelini Dinleyecek Şekilde Başlat ---
-                // Kısa bir gecikme, telefondaki soketin dinlemeye hazır olması için zaman tanır.
+                spawn('adb', ['shell', 'input', 'swipe', '0', '0', '1', '1', '100']);
+                
+                // Bir sonraki sefer için durumu tersine çevir
+                brightnessToggle = !brightnessToggle; 
+            }, 1000); // 1 saniye (1000ms) daha güvenli bir aralıktır.
                 setTimeout(() => {
-                    const ffmpeg = spawn('ffmpeg', [
+                    console.log("Adım 4: FFmpeg başlatılıyor...");
+                    
+                    activeFfmpegProcess = spawn('ffmpeg', [
+                        // Giriş formatını net olarak belirtiyoruz, çünkü screenrecord'un çıktısı güvenilirdir.
                         '-f', 'h264',
-                        '-probesize', '32',          // Hızlı başlangıç için
-                        '-analyzeduration', '0',     // Hızlı başlangıç için
-                        '-i', `tcp://127.0.0.1:${LOCAL_TCP_PORT}`, // GÜVENİLİR TCP GİRİŞİ
+                        '-i', `tcp://127.0.0.1:${LOCAL_TCP_PORT}`,
                         '-f', 'mjpeg',
                         '-q:v', '3',
                         '-pix_fmt', 'yuvj420p',
                         'pipe:1'
                     ]);
-
-                    activeFfmpegProcess = ffmpeg;
                     
-                    // FFmpeg'in stdout'unu işleme mantığı aynı kalıyor
                     let jpegBuffer = Buffer.alloc(0);
                     const DELIMITER = '|||JPEG_END|||';
-
-                    ffmpeg.stdout.on('data', (chunk) => {
+                    activeFfmpegProcess.stdout.on('data', (chunk) => {
                         jpegBuffer = Buffer.concat([jpegBuffer, chunk]);
                         let startIndex = 0;
                         while (true) {
@@ -222,13 +218,17 @@ ws.on('message', async (data) => {
                         jpegBuffer = jpegBuffer.slice(startIndex);
                     });
 
-                    ffmpeg.stderr.on('data', data => console.log(`FFmpeg log: ${data}`));
-                    ffmpeg.on('close', code => {
+                    activeFfmpegProcess.stderr.on('data', data => console.log(`[FFMPEG LOG]: ${data}`));
+                    activeFfmpegProcess.on('close', code => {
                         console.log(`FFmpeg işlemi sonlandı, kod: ${code}`);
-                        if (activeFfmpegProcess === ffmpeg) activeFfmpegProcess = null;
                     });
-                }, 500); // 500ms gecikme
-            });
+
+                }, 2000);
+
+            } catch (error) {
+                console.error("Akış başlatma sırasında kritik bir hata oluştu:", error.message);
+                cleanup();
+            }
         };
 
         // DataChannel'dan gelen komutları işle
@@ -323,8 +323,14 @@ ws.on('close', () => {
 // Temizleme fonksiyonu
 function cleanup() {
     console.log("Temizleme işlemi başlatılıyor...");
+
+    // YENİ VE EN ÖNEMLİ EKLEME: TETİKLEYİCİYİ DURDUR
+    if (triggerInterval) {
+        clearInterval(triggerInterval); // Başlatılan interval'ı durdur
+        triggerInterval = null;         // Değişkeni temizle
+        console.log("Ekran tazeleme tetikleyicisi durduruldu.");
+    }
     
-    // TCP yönlendirmeyi kaldır
     spawn('adb', ['forward', '--remove', 'tcp:54321']);
     console.log("ADB TCP yönlendirmesi kaldırıldı.");
 
@@ -332,7 +338,6 @@ function cleanup() {
         dc.close();
         dc = null;
     }
-    // ... geri kalan cleanup kodu aynı ...
     if (pc) {
         pc.close();
         pc = null;
